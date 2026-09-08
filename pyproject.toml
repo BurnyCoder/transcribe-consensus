@@ -1,0 +1,25 @@
+[project]
+name = "transcribe-consensus"
+version = "0.1.0"
+description = "Multi-model OpenAI speech-to-text with an LLM-reconciled consensus transcript"
+readme = "README.md"
+authors = [
+    { name = "BurnyCoder", email = "happymancz@email.cz" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=3.8.0",
+    "python-dotenv>=1.2.3",
+]
+
+[project.scripts]
+transcribe-consensus = "transcribe_consensus:main"
+
+[build-system]
+requires = ["uv_build>=0.12.3,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
