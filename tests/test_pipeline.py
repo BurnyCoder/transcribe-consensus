@@ -7,8 +7,9 @@ import pytest
 
 from transcribe_consensus import load_raw, parse_args, write_outputs
 from transcribe_consensus.audio import chunk_seconds, duration_seconds, extract_audio, prepare_chunks, split_audio
+from transcribe_consensus.correct import build_correction_prompt, correct
 from transcribe_consensus.merge import build_prompt
-from transcribe_consensus.stt import MODELS, Segment, Transcript, transcribe
+from transcribe_consensus.stt import MODELS, Segment, Transcript, language_runs, transcribe
 
 
 @pytest.fixture
@@ -53,24 +54,61 @@ def test_transcribe_respects_capabilities_and_offsets(tmp_path):
     chunks = [(tmp_path / "a.mp3", 0.0), (tmp_path / "b.mp3", 100.0)]
     for p, _ in chunks:
         p.write_bytes(b"")
-    t = transcribe(c, MODELS["gpt-4o-transcribe-diarize"], chunks, "cs", "hint")
-    assert "language" not in c.calls[0] and "prompt" not in c.calls[0]  # diarize model ignores both
+    t = transcribe(c, MODELS["gpt-4o-transcribe-diarize"], chunks, [], "hint")
+    assert "language" not in c.calls[0] and "prompt" not in c.calls[0]  # diarize model accepts neither
     assert [s.start for s in t.segments] == [1.0, 101.0]  # second chunk shifted by its offset
     assert t.render().startswith("[    1.0] A: hello")
-    t2 = transcribe(c, MODELS["whisper-1"], chunks[:1], "cs", "hint")
+    t2 = transcribe(c, MODELS["whisper-1"], chunks[:1], ["cs"], "hint")
     assert c.calls[-1]["language"] == "cs" and c.calls[-1]["prompt"] == "hint" and t2.run_id == "whisper-1[cs]"
+    t3 = transcribe(c, MODELS["gpt-transcribe"], chunks[:1], ["cs", "sk"], "hint")
+    assert c.calls[-1]["languages"] == ["cs", "sk"] and "language" not in c.calls[-1]  # docs: never send both
+    assert c.calls[-1]["prompt"] == "hint" and t3.run_id == "gpt-transcribe[cs,sk]"
+
+
+def test_language_runs():
+    langs = ["cs", "sk"]
+    assert language_runs(MODELS["whisper-1"], langs) == [["cs"], ["sk"]]  # one run per language
+    assert language_runs(MODELS["gpt-transcribe"], langs) == [["cs", "sk"]]  # one run, all hints at once
+    assert language_runs(MODELS["gpt-4o-transcribe-diarize"], langs) == [[]]  # no language support -> one run
+    assert all(language_runs(s, []) == [[]] for s in MODELS.values())  # auto-detect -> one run each
+
+
+class FakeResponses:
+    """Stands in for client.responses: records the request and returns a fixed corrected text."""
+
+    def __init__(self, text):
+        self.calls, self.text = [], text
+        self.responses = SimpleNamespace(create=self._create)
+
+    def _create(self, **kw):
+        self.calls.append(kw)
+        return SimpleNamespace(output_text=self.text)
+
+
+def test_correct_sends_transcript_and_evidence():
+    ts = [Transcript("m1", "the cat sat"), Transcript("m2", "the hat sat")]
+    p = build_correction_prompt("[0:01] A: the hat sad", ts, "pets")
+    assert p.index("pets") < p.index("===== TRANSCRIPT TO CORRECT =====") < p.index("===== m1 =====")
+    c = FakeResponses("[0:01] A: the cat sat")
+    assert correct(c, "[0:01] A: the hat sad", ts, "some-model", None) == "[0:01] A: the cat sat"
+    assert c.calls[0]["model"] == "some-model" and "the hat sad" in c.calls[0]["input"]
 
 
 def test_build_prompt_and_outputs(tmp_path):
     ts = [Transcript("m1", "a b c"), Transcript("m2", "", [Segment(0.5, "x", "B")])]
     p = build_prompt(ts, "some context")
     assert p.startswith("Context about the recording: some context") and "===== m2 =====" in p
-    d = write_outputs(tmp_path, "rec", ts, "final")
+    d = write_outputs(tmp_path, "rec", ts, "final", "final!")
     assert (d / "m1.txt").read_text() == "a b c" and (d / "consensus.txt").read_text() == "final" and (d / "raw.json").exists()
+    assert (d / "corrected.txt").read_text() == "final!"
+    assert "-final\n+final!" in (d / "corrections.diff").read_text()  # unified diff of consensus -> corrected
     assert load_raw(d / "raw.json") == ts  # raw.json round-trips losslessly
 
 
 def test_parse_args_defaults(monkeypatch):
-    monkeypatch.delenv("TRANSCRIBE_MODELS", raising=False)
-    a = parse_args(["x.mp4", "--languages", "cs, sk", "--no-merge"])
-    assert a.no_merge and a.languages == "cs, sk" and "whisper-1" in a.models
+    for k in ("TRANSCRIBE_MODELS", "TRANSCRIBE_MERGE_MODEL", "TRANSCRIBE_CORRECT_MODEL"):
+        monkeypatch.delenv(k, raising=False)
+    a = parse_args(["x.mp4", "--languages", "cs, sk", "--no-merge", "--no-correct"])
+    assert a.no_merge and a.no_correct and a.languages == "cs, sk"
+    assert a.models.split(",") == ["gpt-transcribe", "whisper-1", "gpt-4o-transcribe-diarize"]
+    assert a.merge_model == a.correct_model == "gpt-6-astra"
