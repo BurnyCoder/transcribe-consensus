@@ -82,7 +82,7 @@ class FakeResponses:
 
     def _create(self, **kw):
         self.calls.append(kw)
-        return SimpleNamespace(output_text=self.text)
+        return SimpleNamespace(output_text=self.text, usage=None)  # SDK Response.usage is Optional
 
 
 def test_correct_sends_transcript_and_evidence():

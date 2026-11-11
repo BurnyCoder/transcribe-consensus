@@ -37,7 +37,7 @@ def ask(client: OpenAI, label: str, model: str, instructions: str, prompt: str) 
     """One Responses API call with the full request and output logged (shared by merge and correct)."""
     log.info("%s: model=%s\n--- instructions ---\n%s\n--- input ---\n%s", label, model, instructions, prompt)
     resp = client.responses.create(model=model, instructions=instructions, input=prompt)
-    log.info("%s: output:\n%s", label, resp.output_text)
+    log.info("%s: usage=%s\n%s: output:\n%s", label, resp.usage, label, resp.output_text)
     return resp.output_text
 
 
