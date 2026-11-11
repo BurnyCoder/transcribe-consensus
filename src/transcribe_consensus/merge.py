@@ -33,10 +33,14 @@ def build_prompt(transcripts: list[Transcript], context: str | None) -> str:
     return "\n\n".join(parts)
 
 
+def ask(client: OpenAI, label: str, model: str, instructions: str, prompt: str) -> str:
+    """One Responses API call with the full request and output logged (shared by merge and correct)."""
+    log.info("%s: model=%s\n--- instructions ---\n%s\n--- input ---\n%s", label, model, instructions, prompt)
+    resp = client.responses.create(model=model, instructions=instructions, input=prompt)
+    log.info("%s: usage=%s\n%s: output:\n%s", label, resp.usage, label, resp.output_text)
+    return resp.output_text
+
+
 def consensus(client: OpenAI, transcripts: list[Transcript], model: str, context: str | None) -> str:
     """Call the Responses API once and return the merged transcript text."""
-    prompt = build_prompt(transcripts, context)
-    log.info("merge: model=%s\n--- instructions ---\n%s\n--- input ---\n%s", model, INSTRUCTIONS, prompt)
-    resp = client.responses.create(model=model, instructions=INSTRUCTIONS, input=prompt)
-    log.info("merge: output:\n%s", resp.output_text)
-    return resp.output_text
+    return ask(client, "merge", model, INSTRUCTIONS, build_prompt(transcripts, context))

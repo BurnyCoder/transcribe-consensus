@@ -21,14 +21,19 @@ class ModelSpec:
 
     name: str
     response_format: str  # "verbose_json" (timestamps), "diarized_json" (speakers), or "json"
-    language: bool = True  # accepts ISO-639-1 `language`
+    language: bool = True  # accepts one ISO-639-1 `language`
+    languages: bool = False  # accepts a `languages` list instead, so one run covers every hint (gpt-transcribe)
     prompt: bool = True  # accepts vocabulary/style `prompt`
     extra: dict = field(default_factory=dict)  # model-specific kwargs
 
 
-# Model table. whisper-1 is the only one returning segment timestamps in verbose_json;
-# gpt-4o-transcribe(-mini) return plain text; the diarize model returns speaker-labelled segments.
+# Model table. gpt-transcribe is OpenAI's recommended file-transcription model (text only, no timestamps
+# or speakers; takes a `languages` list and "don't send both" `language`); whisper-1 is the only one
+# returning segment timestamps (verbose_json); the diarize model returns speaker-labelled segments.
+# All except gpt-transcribe are deprecated with shutdown 2027-02-26:
+# https://developers.openai.com/api/docs/deprecations#2026-08-26-transcription-models
 MODELS: dict[str, ModelSpec] = {
+    "gpt-transcribe": ModelSpec("gpt-transcribe", "json", language=False, languages=True),
     "whisper-1": ModelSpec("whisper-1", "verbose_json"),
     "gpt-4o-transcribe": ModelSpec("gpt-4o-transcribe", "json"),
     "gpt-4o-mini-transcribe": ModelSpec("gpt-4o-mini-transcribe", "json"),
@@ -70,14 +75,26 @@ def _parse(resp, offset: float) -> tuple[str, list[Segment]]:
     return d.get("text", ""), segs
 
 
-def transcribe(client: OpenAI, spec: ModelSpec, chunks: list[tuple[Path, float]], language: str | None, prompt: str | None) -> Transcript:
-    """Send every chunk to `spec.name`, concatenating texts and offsetting segment times by chunk start."""
+def language_runs(spec: ModelSpec, languages: list[str]) -> list[list[str]]:
+    """Language hints for each run of `spec`: all at once (list models), one per run, or none (auto-detect)."""
+    if spec.languages:
+        return [languages]
+    return [[lang] for lang in languages] if spec.language and languages else [[]]
+
+
+def transcribe(client: OpenAI, spec: ModelSpec, chunks: list[tuple[Path, float]], languages: list[str], prompt: str | None) -> Transcript:
+    """Send every chunk to `spec.name`, concatenating texts and offsetting segment times by chunk start.
+
+    `languages` comes from `language_runs`: empty for auto-detect, one code for `language` models.
+    """
     kwargs = {"model": spec.name, "response_format": spec.response_format, **spec.extra}
-    if language and spec.language:
-        kwargs["language"] = language
+    if languages and spec.languages:
+        kwargs["languages"] = languages
+    elif languages and spec.language:
+        kwargs["language"] = languages[0]
     if prompt and spec.prompt:
         kwargs["prompt"] = prompt
-    run_id = f"{spec.name}[{language}]" if language else spec.name
+    run_id = f"{spec.name}[{','.join(languages)}]" if languages else spec.name
     log.info("%s: request kwargs=%s", run_id, kwargs)
     texts, segments = [], []
     for path, offset in chunks:
